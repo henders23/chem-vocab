@@ -27,6 +27,21 @@ tracks their own learning against it.
   - **Fill in the blank** — the example sentence appears with the word blanked
     out; the student types the missing word.
   - After every quiz, missed words can be added to the study list in one click.
+- **Smart review (spaced repetition)** — every quiz answer is recorded. The
+  default quiz source, *Smart review*, uses a Leitner-style schedule: a word's
+  streak of consecutive correct answers decides how soon it comes back
+  (immediately, then 1, 3, 7, 14 and 30 days). Recently-missed words come first.
+- **Pronunciation** — a 🔊 button on every word (in the glossary and in
+  quizzes) speaks the term using the browser's built-in speech synthesis; no
+  internet service required.
+- **Flagging** — students can flag an entry that contains a mistake, with a
+  reason; flagged entries show a 🚩 marker until the teacher dismisses the flag.
+- **Class dashboard (📊 Class tab)** — visible to everyone:
+  - *Words the class wants to study* — the terms most students marked "study
+    this", a ready-made revision list for the teacher.
+  - *Flagged words* — open flags with reasons, dismissible once handled.
+  - *Leaderboard* — per student: words added (5 pts), words learned (2 pts) and
+    correct quiz answers (1 pt).
 
 ## How it works
 
@@ -39,6 +54,8 @@ data lives in a [Supabase](https://supabase.com) Postgres database
 |---|---|
 | `vocab_items` | The shared glossary: term, category, definition, example, notes, added_by |
 | `study_selections` | Per-student selections: one row per (student, word) with status `learned` or `study` |
+| `quiz_results` | One row per quiz answer (student, word, correct?) — powers spaced repetition and the leaderboard |
+| `flags` | Open reports of mistakes in entries, until dismissed from the Class tab |
 
 Row Level Security is enabled. The public key can read, add, and update entries
 and manage study selections, but **cannot delete glossary words** — removing a

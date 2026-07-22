@@ -142,6 +142,20 @@
   .btn.big { font-size: 1rem; padding: 12px 22px; }
   .btn:disabled { opacity: 0.5; cursor: default; }
   .empty { text-align: center; color: var(--muted); padding: 40px 10px; }
+  .speak-btn {
+    border: none; background: none; cursor: pointer;
+    font-size: 1rem; padding: 0 4px; line-height: 1;
+  }
+  .speak-btn:hover { transform: scale(1.2); }
+  .flag-ind { font-size: 0.8rem; }
+  .board-wrap { overflow-x: auto; }
+  table.board { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  table.board th, table.board td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  table.board th { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; }
+  table.board td.num, table.board th.num { text-align: right; }
+  .hotcount { font-weight: 700; color: var(--study); }
+  .hot-row { display: flex; justify-content: space-between; gap: 10px; padding: 7px 2px; border-bottom: 1px solid var(--line); }
+  .hot-row:last-child { border-bottom: none; }
   h2.section { font-size: 1.05rem; margin: 22px 0 10px; }
   .count-note { font-size: 0.85rem; color: var(--muted); margin-bottom: 12px; }
   label { display: block; font-size: 0.88rem; font-weight: 600; margin: 14px 0 4px; }
@@ -240,6 +254,7 @@
   <button data-tab="glossary" class="active">📖 Glossary</button>
   <button data-tab="mywords">⭐ My Words</button>
   <button data-tab="quiz">🎯 Quiz</button>
+  <button data-tab="class">📊 Class</button>
   <button data-tab="add">➕ Add a Word</button>
 </nav>
 
@@ -276,6 +291,7 @@
         <div>
           <label for="quiz-source">Which words?</label>
           <select id="quiz-source">
+            <option value="smart" selected>🧠 Smart review — words due today</option>
             <option value="study">My study list</option>
             <option value="learned">My learned words</option>
             <option value="chemical">All chemicals</option>
@@ -300,6 +316,11 @@
       <p class="hint" id="quiz-source-note" style="margin-bottom:0"></p>
     </div>
     <div id="quiz-area" class="hidden"></div>
+  </section>
+
+  <!-- CLASS DASHBOARD -->
+  <section id="tab-class" class="hidden">
+    <div id="class-content"><div class="empty">Loading class data…</div></div>
   </section>
 
   <!-- ADD WORD -->
@@ -364,6 +385,8 @@ async function api(path, options = {}) {
 let studentName = localStorage.getItem("chemvocab_name") || "";
 let vocab = [];            // all vocab_items, sorted by term
 let selections = new Map(); // vocab_id -> 'learned' | 'study'
+let myResults = [];        // this student's quiz history, oldest first
+let flags = [];            // open flags on glossary entries
 let activeCat = "all";
 let searchText = "";
 
@@ -407,6 +430,37 @@ async function loadSelections() {
   rows.forEach((r) => selections.set(r.vocab_id, r.status));
 }
 
+async function loadMyResults() {
+  myResults = studentName
+    ? await api(`quiz_results?select=vocab_id,correct,quizzed_at&student_name=eq.${encodeURIComponent(studentName)}&order=quizzed_at.asc`)
+    : [];
+}
+
+async function loadFlags() {
+  flags = await api("flags?select=*&order=created_at.desc");
+}
+
+function recordResult(item, correct) {
+  if (!studentName) return;
+  myResults.push({ vocab_id: item.id, correct, quizzed_at: new Date().toISOString() });
+  api("quiz_results", {
+    method: "POST",
+    body: JSON.stringify({ student_name: studentName, vocab_id: item.id, correct }),
+  }).catch(console.error);
+}
+
+// ---------------------------------------------------------------------------
+// Speech (browser built-in, no internet needed)
+// ---------------------------------------------------------------------------
+function speak(text) {
+  if (!("speechSynthesis" in window)) { toast("Sorry — this browser cannot speak."); return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "en-GB";
+  u.rate = 0.9;
+  speechSynthesis.speak(u);
+}
+
 async function setSelection(vocabId, status) {
   // Toggling the same status off removes the selection entirely.
   if (selections.get(vocabId) === status) {
@@ -429,11 +483,14 @@ async function setSelection(vocabId, status) {
 // ---------------------------------------------------------------------------
 function itemCard(item, { showRemove = false } = {}) {
   const sel = selections.get(item.id);
+  const isFlagged = flags.some((f) => f.vocab_id === item.id);
   return `
   <div class="card" data-id="${item.id}">
     <div class="term-row">
       <span class="term">${esc(item.term)}</span>
+      <button class="speak-btn" data-act="speak" title="Hear this word">🔊</button>
       <span class="badge ${esc(item.category)}">${CATEGORY_LABELS[item.category] || esc(item.category)}</span>
+      ${isFlagged ? `<span class="flag-ind" title="Flagged for the teacher to check">🚩 flagged</span>` : ""}
     </div>
     <div class="definition">${esc(item.definition)}</div>
     ${item.example ? `<div class="example">${esc(item.example)}</div>` : ""}
@@ -443,6 +500,7 @@ function itemCard(item, { showRemove = false } = {}) {
       <button class="btn ${sel === "learned" ? "learned-on" : ""}" data-act="learned">✅ I've learned this</button>
       <button class="btn ${sel === "study" ? "study-on" : ""}" data-act="study">📌 Study this</button>
       <button class="btn" data-act="note">📝 Add note</button>
+      <button class="btn" data-act="flag" title="Report a mistake to the teacher">🚩 Flag</button>
       ${showRemove ? `<button class="btn" data-act="remove">✖ Remove from my list</button>` : ""}
     </div>
   </div>`;
@@ -463,6 +521,11 @@ function bindCardActions(container) {
           renderMyWords();
         } else if (act === "note") {
           await addNote(id);
+        } else if (act === "flag") {
+          await flagItem(id);
+        } else if (act === "speak") {
+          const item = vocab.find((v) => v.id === id);
+          if (item) speak(item.term);
         }
       } catch (e) {
         toast("Something went wrong — check your internet connection.");
@@ -486,6 +549,22 @@ async function addNote(vocabId) {
   renderGlossary();
   renderMyWords();
   toast("Note added for the whole class 📝");
+}
+
+async function flagItem(vocabId) {
+  const item = vocab.find((v) => v.id === vocabId);
+  if (!item) return;
+  const reason = prompt(`What is wrong with “${item.term}”? Your teacher will review it.`, "");
+  if (reason === null) return;
+  const [row] = await api("flags", {
+    method: "POST",
+    headers: { "Prefer": "return=representation" },
+    body: JSON.stringify({ vocab_id: vocabId, student_name: studentName, reason: reason.trim() || null }),
+  });
+  flags.unshift(row);
+  renderGlossary();
+  renderMyWords();
+  toast("Flagged — your teacher will take a look 🚩");
 }
 
 function filteredVocab() {
@@ -525,7 +604,41 @@ function renderMyWords() {
 // ---------------------------------------------------------------------------
 let quiz = null; // { mode, items, index, correct, missed }
 
+// Spaced repetition (Leitner-style): a word's "box" is its streak of consecutive
+// correct answers. Higher boxes come back after longer intervals.
+const REVIEW_INTERVAL_DAYS = [0, 1, 3, 7, 14, 30];
+
+function smartPool() {
+  // Words this student is engaged with: selected or previously quizzed.
+  const engaged = new Set(selections.keys());
+  myResults.forEach((r) => engaged.add(r.vocab_id));
+
+  const stats = new Map(); // vocab_id -> { streak, last }
+  for (const r of myResults) { // oldest first, so streak ends up current
+    const s = stats.get(r.vocab_id) || { streak: 0, last: 0 };
+    s.streak = r.correct ? s.streak + 1 : 0;
+    s.last = new Date(r.quizzed_at).getTime();
+    stats.set(r.vocab_id, s);
+  }
+
+  const now = Date.now();
+  const due = [];
+  for (const id of engaged) {
+    const item = vocab.find((v) => v.id === id);
+    if (!item) continue;
+    const s = stats.get(id);
+    if (!s) { due.push({ item, prio: 1 }); continue; } // selected but never quizzed
+    const box = Math.min(s.streak, REVIEW_INTERVAL_DAYS.length - 1);
+    if (now - s.last >= REVIEW_INTERVAL_DAYS[box] * 86400000) {
+      due.push({ item, prio: box === 0 ? 0 : 1 + box }); // recently-wrong words first
+    }
+  }
+  due.sort((a, b) => a.prio - b.prio);
+  return due.map((d) => d.item);
+}
+
 function quizPool(source) {
+  if (source === "smart") return smartPool();
   if (source === "study") return vocab.filter((v) => selections.get(v.id) === "study");
   if (source === "learned") return vocab.filter((v) => selections.get(v.id) === "learned");
   if (source === "all") return vocab.slice();
@@ -539,13 +652,19 @@ function startQuiz() {
   if (mode === "blank") {
     pool = pool.filter((v) => v.example && exampleWithBlank(v) !== null);
   }
-  if (pool.length < (mode === "mc" ? 4 : 1)) {
-    toast(mode === "mc"
-      ? "You need at least 4 words in that list for multiple choice."
+  if (!pool.length) {
+    toast(source === "smart"
+      ? "Nothing is due for review — great work! 🎉 Come back tomorrow."
       : "That list is empty — pick some words to study first!");
     return;
   }
-  quiz = { mode, items: shuffle(pool).slice(0, 10), index: 0, correct: 0, missed: [] };
+  if (mode === "mc" && vocab.length < 4) {
+    toast("The glossary needs at least 4 words for multiple choice.");
+    return;
+  }
+  // Smart review is priority-ordered: take the most urgent 10, then shuffle those.
+  const items = source === "smart" ? shuffle(pool.slice(0, 10)) : shuffle(pool).slice(0, 10);
+  quiz = { mode, items, index: 0, correct: 0, missed: [] };
   $("quiz-setup").classList.add("hidden");
   $("quiz-area").classList.remove("hidden");
   renderQuestion();
@@ -569,7 +688,7 @@ function renderQuestion() {
     area.innerHTML = `
       <div class="qcard">
         <div class="qprogress">${progress} · Flashcards</div>
-        <div class="qbig">${esc(item.term)}</div>
+        <div class="qbig">${esc(item.term)} <button class="speak-btn" id="qspeak" title="Hear this word" style="font-size:1.2rem">🔊</button></div>
         <div class="qprompt" style="color:var(--muted);font-weight:400;font-size:0.9rem">${CATEGORY_LABELS[item.category]}</div>
         <div class="actions" style="justify-content:center;margin-top:18px">
           <button class="btn primary big" id="flip">Show meaning</button>
@@ -584,12 +703,14 @@ function renderQuestion() {
           </div>
         </div>
       </div>`;
+    $("qspeak").addEventListener("click", () => speak(item.term));
     $("flip").addEventListener("click", () => {
       $("back").classList.remove("hidden");
       $("flip").classList.add("hidden");
     });
-    $("knew").addEventListener("click", () => { quiz.correct++; nextQuestion(); });
-    $("didnt").addEventListener("click", async () => {
+    $("knew").addEventListener("click", () => { recordResult(item, true); quiz.correct++; nextQuestion(); });
+    $("didnt").addEventListener("click", () => {
+      recordResult(item, false);
       quiz.missed.push(item);
       nextQuestion();
     });
@@ -631,7 +752,9 @@ function renderQuestion() {
         const fb = $("qfeedback");
         fb.textContent = right ? "Correct! 🎉" : `Not quite — the answer is “${item.term}”.`;
         fb.className = `qfeedback ${right ? "good" : "bad"}`;
+        recordResult(item, right);
         if (right) quiz.correct++; else quiz.missed.push(item);
+        speak(item.term);
         if (item.example) fb.insertAdjacentHTML("afterend", `<div class="example" style="margin-top:8px">${esc(item.example)}</div>`);
         $("qnext-row").classList.remove("hidden");
       });
@@ -664,7 +787,9 @@ function renderQuestion() {
     fb.textContent = right ? "Correct! 🎉" : `The answer was “${item.term}”.${revealed ? "" : " Keep going!"}`;
     fb.className = `qfeedback ${right ? "good" : "bad"}`;
     fb.insertAdjacentHTML("afterend", `<div class="definition" style="margin-top:8px"><strong>Meaning:</strong> ${esc(item.definition)}</div>`);
+    recordResult(item, right);
     if (right) quiz.correct++; else quiz.missed.push(item);
+    speak(item.term);
     $("blank-actions").innerHTML = `<button class="btn primary" id="qnext">Next →</button>`;
     $("qnext").addEventListener("click", nextQuestion);
     $("qnext").focus();
@@ -734,6 +859,112 @@ function renderQuizEnd() {
 }
 
 // ---------------------------------------------------------------------------
+// Class dashboard: revision priorities, flags, leaderboard
+// ---------------------------------------------------------------------------
+async function renderClass() {
+  const el = $("class-content");
+  el.innerHTML = `<div class="empty">Loading class data…</div>`;
+  try {
+    const [allSel, allRes] = await Promise.all([
+      api("study_selections?select=vocab_id,student_name,status"),
+      api("quiz_results?select=student_name,correct"),
+      loadFlags(),
+    ]);
+
+    // Words the class most wants to study — the teacher's revision list
+    const studyCounts = new Map();
+    allSel.filter((s) => s.status === "study")
+      .forEach((s) => studyCounts.set(s.vocab_id, (studyCounts.get(s.vocab_id) || 0) + 1));
+    const hot = [...studyCounts.entries()]
+      .map(([id, n]) => ({ item: vocab.find((v) => v.id === id), n }))
+      .filter((x) => x.item)
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 10);
+
+    // Leaderboard
+    const board = new Map();
+    const row = (name) => {
+      if (!board.has(name)) board.set(name, { added: 0, learned: 0, answers: 0, correct: 0 });
+      return board.get(name);
+    };
+    vocab.forEach((v) => { if (v.added_by && v.added_by !== "Teacher") row(v.added_by).added++; });
+    allSel.forEach((s) => { if (s.status === "learned") row(s.student_name).learned++; });
+    allRes.forEach((r) => { const b = row(r.student_name); b.answers++; if (r.correct) b.correct++; });
+    const ranked = [...board.entries()]
+      .map(([name, b]) => ({ name, ...b, points: b.added * 5 + b.learned * 2 + b.correct }))
+      .sort((a, b) => b.points - a.points);
+    const medals = ["🥇", "🥈", "🥉"];
+
+    el.innerHTML = `
+      <div class="card">
+        <h2 class="section" style="margin-top:0">🔥 Words the class wants to study</h2>
+        <p class="hint">The words most students have marked “study this” — good candidates for the next revision lesson.</p>
+        ${hot.length ? hot.map((h) => `
+          <div class="hot-row">
+            <span><strong>${esc(h.item.term)}</strong> <span class="hint">(${CATEGORY_LABELS[h.item.category]})</span></span>
+            <span class="hotcount">${h.n} student${h.n === 1 ? "" : "s"}</span>
+          </div>`).join("")
+        : `<div class="empty">No study selections yet.</div>`}
+      </div>
+
+      <div class="card">
+        <h2 class="section" style="margin-top:0">🚩 Flagged words</h2>
+        <p class="hint">Entries students think contain a mistake. Fix the entry (or ignore the flag), then dismiss it.</p>
+        ${flags.length ? flags.map((f) => {
+          const item = vocab.find((v) => v.id === f.vocab_id);
+          return `
+          <div class="hot-row">
+            <span>
+              <strong>${esc(item ? item.term : "(deleted word)")}</strong>
+              ${f.reason ? ` — ${esc(f.reason)}` : ""}
+              <span class="hint">(flagged by ${esc(f.student_name)})</span>
+            </span>
+            <button class="btn" data-dismiss="${f.id}">✔ Dismiss</button>
+          </div>`;
+        }).join("")
+        : `<div class="empty">No open flags — the glossary looks healthy! ✨</div>`}
+      </div>
+
+      <div class="card">
+        <h2 class="section" style="margin-top:0">🏆 Leaderboard</h2>
+        <p class="hint">Points: 5 per word added, 2 per word learned, 1 per correct quiz answer.</p>
+        ${ranked.length ? `
+        <div class="board-wrap"><table class="board">
+          <tr><th></th><th>Student</th><th class="num">Words added</th><th class="num">Learned</th><th class="num">Quiz answers</th><th class="num">Points</th></tr>
+          ${ranked.map((r, i) => `
+            <tr>
+              <td>${medals[i] || i + 1}</td>
+              <td><strong>${esc(r.name)}</strong>${r.name === studentName ? " (you)" : ""}</td>
+              <td class="num">${r.added}</td>
+              <td class="num">${r.learned}</td>
+              <td class="num">${r.answers ? `${r.correct}/${r.answers} (${Math.round((r.correct / r.answers) * 100)}%)` : "—"}</td>
+              <td class="num"><strong>${r.points}</strong></td>
+            </tr>`).join("")}
+        </table></div>`
+        : `<div class="empty">No activity yet — start learning to appear here!</div>`}
+      </div>`;
+
+    el.querySelectorAll("[data-dismiss]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        try {
+          await api(`flags?id=eq.${btn.dataset.dismiss}`, { method: "DELETE" });
+          flags = flags.filter((f) => f.id !== btn.dataset.dismiss);
+          renderClass();
+          renderGlossary();
+          toast("Flag dismissed");
+        } catch (e) {
+          toast("Could not dismiss the flag — check your connection.");
+          console.error(e);
+        }
+      });
+    });
+  } catch (e) {
+    el.innerHTML = `<div class="empty">Could not load class data. Check your connection and try again.</div>`;
+    console.error(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Add word
 // ---------------------------------------------------------------------------
 $("add-form").addEventListener("submit", async (e) => {
@@ -778,13 +1009,17 @@ $("add-form").addEventListener("submit", async (e) => {
 // ---------------------------------------------------------------------------
 function switchTab(tab) {
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  ["glossary", "mywords", "quiz", "add"].forEach((t) => $(`tab-${t}`).classList.toggle("hidden", t !== tab));
+  ["glossary", "mywords", "quiz", "class", "add"].forEach((t) => $(`tab-${t}`).classList.toggle("hidden", t !== tab));
   if (tab === "quiz") {
+    const due = smartPool().length;
     const n = quizPool("study").length;
-    $("quiz-source-note").textContent = n
-      ? `You have ${n} word${n === 1 ? "" : "s"} on your study list.`
-      : "Tip: your study list is empty — quizzes work best on words you chose to study.";
+    $("quiz-source-note").textContent = due
+      ? `🧠 ${due} word${due === 1 ? " is" : "s are"} due for smart review today.`
+      : n
+        ? `Nothing due for smart review — try your study list (${n} word${n === 1 ? "" : "s"}) or a category.`
+        : "Tip: mark some words “study this” in the Glossary, and smart review will schedule them for you.";
   }
+  if (tab === "class") renderClass();
 }
 document.querySelectorAll("nav button").forEach((b) =>
   b.addEventListener("click", () => switchTab(b.dataset.tab)));
@@ -819,7 +1054,7 @@ async function saveName() {
   $("name-overlay").classList.add("hidden");
   updateWho();
   try {
-    await loadSelections();
+    await Promise.all([loadSelections(), loadMyResults()]);
   } catch (e) { console.error(e); }
   renderGlossary();
   renderMyWords();
@@ -830,7 +1065,7 @@ async function saveName() {
   if (!studentName) askName();
   try {
     await loadVocab();
-    await loadSelections();
+    await Promise.all([loadSelections(), loadMyResults(), loadFlags()]);
     renderGlossary();
     renderMyWords();
   } catch (e) {
